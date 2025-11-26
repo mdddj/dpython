@@ -3,253 +3,332 @@ import 'package:dpython/frb_generated.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:dpython/util/py_path_util.dart';
+import 'package:syntax_highlight/syntax_highlight.dart';
+import 'package:waterfall_flow/waterfall_flow.dart';
 
-//
+// A simple data model for our examples.
+class PythonExample {
+  final String title;
+  final String code;
+  final Future<String> Function() function;
+
+  PythonExample({
+    required this.title,
+    required this.code,
+    required this.function,
+  });
+}
+
+late HighlighterTheme codeTheme;
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Required initialization for the Rust-Dart bridge.
   await RustLib.init();
   final pyPath = await PythonPathHelper.getPaths();
+  codeTheme = await HighlighterTheme.loadLightTheme();
   initPyEnv(
     pythonHome: pyPath.home,
     libPath: pyPath.libPath,
     sitePackages: pyPath.sitePackages,
   );
+  await Highlighter.initialize(['dart']);
+
   runApp(const MyApp());
 }
 
-class MyApp extends StatefulWidget {
+class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
-  State<MyApp> createState() => _MyAppState();
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.light,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const ExampleScreen(),
+    );
+  }
 }
 
-class _MyAppState extends State<MyApp> {
+class ExampleScreen extends StatefulWidget {
+  const ExampleScreen({super.key});
+
+  @override
+  State<ExampleScreen> createState() => _ExampleScreenState();
+}
+
+class _ExampleScreenState extends State<ExampleScreen> {
+  late final List<PythonExample> _examples;
+
   @override
   void initState() {
     super.initState();
+    _examples = _getExamples();
   }
 
-  void testImportModule() async {
-    try {
-      // 1. Call Rust's import to get a Rust object handle.
-      // This wrapper internally holds the Python sys module.
-      var sysModule = PyModuleWrapper.importModule(moduleName: "sys");
-
-      // 2. Call methods of the module (forwarded through Rust).
-      // For example, if we implemented a method in Rust to get the platform.
-      // Or just print the module info.
-      debugPrint("Imported module: ${sysModule.asStr()}");
-
-      // If you have encapsulated specific business logic, e.g., run_algo
-      // await sysModule.runAlgo();
-    } catch (e) {
-      debugPrint("Error importing python module: $e");
-    }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('dpython Flutter Examples')),
+      body: WaterfallFlow.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: SliverWaterfallFlowDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 16,
+          mainAxisSpacing: 16,
+          lastChildLayoutTypeBuilder: (index) => index == _examples.length
+              ? LastChildLayoutType.foot
+              : LastChildLayoutType.none,
+        ),
+        itemCount: _examples.length,
+        itemBuilder: (context, index) {
+          return ExampleCard(example: _examples[index]);
+        },
+      ),
+    );
   }
 
-  // Test function 1: Call with no arguments
-  // Target Python code: sys.getdefaultencoding() -> returns 'utf-8'
-  void testCallFunctionNoArgs() async {
-    debugPrint("Testing function call with no arguments...");
-    try {
-      // 1. Import the sys module
-      var sysModule = PyModuleWrapper.importModule(moduleName: "sys");
+  // Central place to define all examples.
+  List<PythonExample> _getExamples() {
+    return [
+      PythonExample(
+        title: "Get Python Version",
+        code: """
+final version = await PythonUtility.getModuleAttr(
+  moduleName: "sys",
+  attrName: "version",
+);
+return version;""",
+        function: () async {
+          final version = await PythonUtility.getModuleAttr(
+            moduleName: "sys",
+            attrName: "version",
+          );
+          return version;
+        },
+      ),
+      PythonExample(
+        title: "Call No-Args Function",
+        code: """
+var sysModule = PyModuleWrapper.importModule(moduleName: "sys");
+var result = sysModule.callFunction(funcName: "getdefaultencoding");
+return "Default Encoding: \$result";""",
+        function: () async {
+          var sysModule = PyModuleWrapper.importModule(moduleName: "sys");
+          var result = sysModule.callFunction(funcName: "getdefaultencoding");
+          return "Default Encoding: $result";
+        },
+      ),
+      PythonExample(
+        title: "Call With-Args Function",
+        code: """
+var math = PyModuleWrapper.importModule(moduleName: "math");
+var result = math.callFunctionArgs(
+  funcName: "pow",
+  args: [
+    PyArgument.float(2.0),
+    PyArgument.float(8.0),
+  ],
+);
+return "2.0 ^ 8.0 = \$result";""",
+        function: () async {
+          var mathModule = PyModuleWrapper.importModule(moduleName: "math");
+          var result = mathModule.callFunctionArgs(
+            funcName: "pow",
+            args: [PyArgument.float(2.0), PyArgument.float(8.0)],
+          );
+          return "2.0 ^ 8.0 = $result";
+        },
+      ),
+      PythonExample(
+        title: "Eval Expression",
+        code: """
+var res = await PythonUtility.eval(
+  code: "os.name",
+  imports: ["os"],
+);
+return "os.name is '\$res'";""",
+        function: () async {
+          var res = await PythonUtility.eval(code: "os.name", imports: ["os"]);
+          return "os.name is '$res'";
+        },
+      ),
+      PythonExample(
+        title: "Eval with Globals",
+        code: """
+var res = await PythonUtility.eval(
+  code: "x * y + z",
+  globals: [
+    ("x", PyArgument.int(5)),
+    ("y", PyArgument.int(10)),
+    ("z", PyArgument.int(3)),
+  ],
+);
+return "5 * 10 + 3 = \$res";""",
+        function: () async {
+          var res = await PythonUtility.eval(
+            code: "x * y + z",
+            globals: [
+              ("x", PyArgument.int(5)),
+              ("y", PyArgument.int(10)),
+              ("z", PyArgument.int(3)),
+            ],
+            imports: [],
+          );
+          return "5 * 10 + 3 = $res";
+        },
+      ),
+      PythonExample(
+        title: "Advanced: Manipulate Objects",
+        code: """
+// 1. Create a Python list object
+var pyList = await PythonUtility.evalAsObject(
+  code: "[1, 'apple', 3]");
 
-      // 2. Call the getdefaultencoding function
-      // This function takes no arguments and returns the default encoding of the current Python environment
-      var result = sysModule.callFunction(funcName: "getdefaultencoding");
+// 2. Append an item
+await pyList.callMethod(
+  methodName: "append", 
+  args: [PyArgument.str("banana")]);
 
-      debugPrint("✅ Call successful! Python default encoding: $result");
-    } catch (e) {
-      debugPrint("❌ Call failed: $e");
-    }
+// 3. Get an item and convert it
+var item = await pyList.getItem(key: PyArgument.int(1));
+final itemStr = item.asStr();
+
+// 4. Get new length
+final len = pyList.len();
+
+return "List length: \$len, Item[1]: \$itemStr";""",
+        function: () async {
+          var pyList = await PythonUtility.evalAsObject(
+            code: "[1, 'apple', 3]",
+          );
+          await pyList.callMethod(
+            methodName: "append",
+            args: [PyArgument.str("banana")],
+          );
+
+          var item = pyList.getItem(key: PyArgument.int(1));
+          final itemStr = item.asStr();
+
+          final len = pyList.len();
+
+          return "List length: $len, Item[1]: $itemStr";
+        },
+      ),
+    ];
   }
+}
 
-  // Test function 2: Call with arguments
-  // Target Python code: math.pow(2.0, 3.0) -> returns '8.0'
-  void testCallFunctionWithArgs() async {
-    debugPrint("Testing function call with arguments...");
+// A reusable card widget to display a single Python example.
+class ExampleCard extends StatefulWidget {
+  final PythonExample example;
+
+  const ExampleCard({super.key, required this.example});
+
+  @override
+  State<ExampleCard> createState() => _ExampleCardState();
+}
+
+class _ExampleCardState extends State<ExampleCard> {
+  String? _result;
+  bool _isLoading = false;
+
+  Future<void> _runExample() async {
+    setState(() {
+      _isLoading = true;
+      _result = null;
+    });
     try {
-      // 1. Import the math module
-      var mathModule = PyModuleWrapper.importModule(moduleName: "math");
-
-      // 2. Call the pow function (calculates power, i.e., 2 to the power of 3)
-      var result = mathModule.callFunctionArgs(
-        funcName: "pow",
-        args: [
-          // Note: This corresponds to the PyArgument enum defined in Rust
-          PyArgument.float(2.0), // First argument: base
-          PyArgument.float(3.0), // Second argument: exponent
-        ],
-      );
-
-      debugPrint("✅ Call successful! 2.0 to the power of 3.0 is: $result");
+      final result = await widget.example.function();
+      setState(() {
+        _result = result;
+      });
     } catch (e) {
-      debugPrint("❌ Call failed: $e");
+      setState(() {
+        _result = "Error: $e";
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(title: const Text('Python Code Runner')),
-        body: SingleChildScrollView(
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            width: double.infinity,
+    final theme = Theme.of(context);
+    final resultStyle = theme.textTheme.bodyMedium!.copyWith(
+      fontFamily: 'monospace',
+      color: _result?.startsWith("Error:") ?? false
+          ? Colors.redAccent
+          : Colors.green,
+    );
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: double.infinity),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: SingleChildScrollView(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                OutlinedButton(
-                  onPressed: testImportModule,
-                  child: const Text("Test Importing Module"),
+                Text(widget.example.title, style: theme.textTheme.titleLarge),
+                const SizedBox(height: 8),
+                // Code Block
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text.rich(
+                    Highlighter(
+                      language: 'dart',
+                      theme: codeTheme,
+                    ).highlight(widget.example.code.trim()),
+                  ),
+                  // child: SelectableText(
+                  //   widget.example.code.trim(),
+                  //   style: codeStyle,
+                  // ),
                 ),
-                OutlinedButton(
-                  onPressed: testCallFunctionNoArgs,
-                  child: const Text("Test No-Args Call"),
+                // Result Section
+                Row(
+                  children: [
+                    const Text(
+                      "Result:",
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _isLoading
+                          ? const Center(
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : SelectableText(
+                              _result ?? 'Press "Run" to execute.',
+                              style: resultStyle,
+                            ),
+                    ),
+                  ],
                 ),
-                OutlinedButton(
-                  onPressed: testCallFunctionWithArgs,
-                  child: const Text("Test With-Args Call"),
+                const SizedBox(height: 8),
+                // Action Button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _runExample,
+                    child: const Text('Run'),
+                  ),
                 ),
-                OutlinedButton(
-                  onPressed: () async {
-                    var res = await PythonUtility.eval(
-                      code: "os.name",
-                      imports: ["os"],
-                      globals: null, // Use default environment
-                      locals: null,
-                    );
-                    debugPrint("os.name result: $res"); // Output: posix or nt
-                  },
-                  child: const Text("Test Eval 'os.name'"),
-                ),
-                OutlinedButton(
-                  onPressed: () async {
-                    // Python: x + y (but executed in a sandbox)
-                    var res = await PythonUtility.eval(
-                      code: "x + y",
-                      imports: [],
-                      globals: [
-                        ("x", PyArgument.int(10)),
-                        ("y", PyArgument.int(20)),
-                      ],
-                      locals: null, // By default, locals = globals
-                    );
-                    debugPrint("Eval 'x + y' result: $res"); // Output: 30
-                  },
-                  child: const Text("Test Eval with Globals"),
-                ),
-                OutlinedButton(
-                  onPressed: () {
-                    void debugPythonPath() async {
-                      try {
-                        debugPrint("--- Debugging Python Path ---");
-
-                        // 1. Print sys.path
-                        // Note: the imports parameter automatically injects sys into the context, so you can use it directly in the code.
-                        var sysPath = await PythonUtility.eval(
-                          code: "str(sys.path)",
-                          imports: ["sys"],
-                          globals: [],
-                          locals: null,
-                        );
-                        debugPrint("Python Path: $sysPath");
-
-                        // 2. Print sys.executable
-                        var sysExe = await PythonUtility.eval(
-                          code: "sys.executable",
-                          imports: ["sys"],
-                          globals: [],
-                          locals: null,
-                        );
-                        debugPrint("Executable: $sysExe");
-
-                        // 3. Try os.name again, this time ensuring the environment
-                        var osName = await PythonUtility.eval(
-                          code: "os.name",
-                          imports: ["os"],
-                          globals: [],
-                          locals: null,
-                        );
-                        debugPrint("OS Name: $osName");
-                      } catch (e) {
-                        debugPrint("Debug Error: $e");
-                      }
-                    }
-
-                    debugPythonPath();
-                  },
-
-                  child: const Text("Debug Python Environment"),
-                ),
-                OutlinedButton(
-                  onPressed: () async {
-                    final version = await PythonUtility.getModuleAttr(
-                      moduleName: "sys",
-                      attrName: "version",
-                    );
-                    debugPrint("Python version: $version");
-                  },
-                  child: const Text("Get Python Version"),
-                ),
-                OutlinedButton(
-                    onPressed: testAdvancedObjectManipulation,
-                    child: const Text("Advanced Object Tests")),
               ],
             ),
           ),
         ),
       ),
     );
-  }
-
-  void testAdvancedObjectManipulation() async {
-    // 1. Create a Python list
-    var pyList = await PythonUtility.evalAsObject(
-      code: "[1, 2, 3]",
-      globals: null,
-      locals: null,
-    );
-
-    // 2. Call the append method
-    await pyList.callMethod(methodName: "append", args: [PyArgument.int(4)]);
-
-    // 3. Get the length -> 4
-    debugPrint("List length: ${pyList.len()}");
-
-    // 4. Get the 0th element -> 1
-    var item0 = pyList.getItem(key: PyArgument.int(0));
-    debugPrint('List item[0]: ${item0.asInt()}');
-
-    // 5. Use execute to define a class
-    await PythonUtility.execute(
-      code: """
-class Person:
-    def __init__(self, name):
-        self.name = name
-    def greet(self):
-        return f"Hello, {self.name}"
-""",
-      globals: null,
-      locals: null,
-    );
-
-    // 6. Instantiate this class
-    // Assuming it's stored in globals, or we could use evalAsObject("Person('Alice')")
-    var person = await PythonUtility.evalAsObject(
-      code: "Person('Alice')",
-      globals: null,
-      locals: null,
-    );
-
-    // 7. Access an attribute
-    var name = person.getattr(attrName: "name");
-    debugPrint("Person.name: ${name.asStr()}"); // "Alice"
-
-    // 8. Call a method
-    var greeting = await person.callMethod(methodName: "greet", args: []);
-    debugPrint("Person.greet(): ${greeting.asStr()}"); // "Hello, Alice"
   }
 }
