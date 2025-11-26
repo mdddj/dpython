@@ -1,92 +1,163 @@
 # dpython
 
-A new Flutter FFI plugin project.
 
-## Getting Started
+# dpython Usage Guide
 
-This project is a starting point for a Flutter
-[FFI plugin](https://flutter.dev/to/ffi-package),
-a specialized package that includes native code directly invoked with Dart FFI.
+This guide explains how to use the `dpython` plugin to execute Python code within your Flutter application. The API is designed to be flexible, offering both simple top-level functions for quick execution and a more advanced object-oriented approach for fine-grained control.
 
-## Project structure
+## 1. Setup: Initializing the Python Environment
 
-This template uses the following structure:
+Before calling any Python code, you must initialize the Python environment. This is a critical step that tells the plugin where to find the Python standard library and other packages.
 
-* `src`: Contains the native source code, and a CmakeFile.txt file for building
-  that source code into a dynamic library.
+You should call `initPyEnv` once at the start of your application. The `PythonPathHelper` utility can help you determine the correct paths for your embedded Python distribution.
 
-* `lib`: Contains the Dart code that defines the API of the plugin, and which
-  calls into the native code using `dart:ffi`.
+```dart
+import 'package:dpython/dpython.dart';
+import 'package:dpython/util/py_path_util.dart';
 
-* platform folders (`android`, `ios`, `windows`, etc.): Contains the build files
-  for building and bundling the native code library with the platform application.
+Future<void> main() async {
+  // Must be called before any other dpython function
+  await RustLib.init(); 
 
-## Building and bundling native code
-
-The `pubspec.yaml` specifies FFI plugins as follows:
-
-```yaml
-  plugin:
-    platforms:
-      some_platform:
-        ffiPlugin: true
+  // Get paths for the embedded Python environment
+  final pyPath = await PythonPathHelper.getPaths();
+  
+  // Initialize the environment
+  initPyEnv(
+    pythonHome: pyPath.home,
+    libPath: pyPath.libPath,
+    sitePackages: pyPath.sitePackages,
+  );
+  
+  runApp(const MyApp());
+}
 ```
 
-This configuration invokes the native build for the various target platforms
-and bundles the binaries in Flutter applications using these FFI plugins.
+## 2. Core Concepts: Passing Data with `PyArgument`
 
-This can be combined with dartPluginClass, such as when FFI is used for the
-implementation of one platform in a federated plugin:
+When you need to pass data from Dart to Python (e.g., as function arguments or variables in a context), you use the `PyArgument` enum. It wraps standard Dart types into a format that the Rust backend can convert into Python objects.
 
-```yaml
-  plugin:
-    implements: some_other_plugin
-    platforms:
-      some_platform:
-        dartPluginClass: SomeClass
-        ffiPlugin: true
+Supported types include:
+- `PyArgument.str(String)`
+- `PyArgument.int(int)`
+- `PyArgument.float(double)`
+- `PyArgument.bool(bool)`
+- `PyArgument.listStr(List<String>)`
+- `PyArgument.listInt(List<int>)`
+
+## 3. The APIs: Three Ways to Interact with Python
+
+`dpython` offers three main entry points for Python interaction, from simplest to most powerful.
+
+### Level 1: `PythonUtility` - The Quick & Easy API
+
+This class provides static methods for common tasks, like evaluating a simple expression or executing a script. Results are typically returned as strings.
+
+#### Evaluating an expression with `eval`
+
+Use `eval` to execute a single Python expression and get the result as a string.
+
+```dart
+// Simple evaluation
+String osName = await PythonUtility.eval(
+  code: "os.name",
+  imports: ["os"], // Automatically imports 'os' module
+);
+debugPrint("OS Name: $osName"); // Prints: "posix" or "nt"
+
+// Evaluation with a custom context (globals)
+String result = await PythonUtility.eval(
+  code: "x + y",
+  globals: [
+    ("x", PyArgument.int(10)),
+    ("y", PyArgument.int(20)),
+  ],
+);
+debugPrint("Result: $result"); // Prints: "30"
 ```
 
-A plugin can have both FFI and method channels:
+#### Executing statements with `execute`
 
-```yaml
-  plugin:
-    platforms:
-      some_platform:
-        pluginClass: SomeName
-        ffiPlugin: true
+Use `execute` when you need to run Python statements that don't return a value, such as defining a class or a function.
+
+```dart
+await PythonUtility.execute(
+  code: """
+class Greeter:
+    def __init__(self, name):
+        self.name = name
+    def say_hello(self):
+        return f"Hello, {self.name}"
+""",
+);
+
+// You can now use the 'Greeter' class in subsequent calls
 ```
 
-The native build systems that are invoked by FFI (and method channel) plugins are:
+### Level 2: `PyModuleWrapper` - Interacting with Modules
 
-* For Android: Gradle, which invokes the Android NDK for native builds.
-  * See the documentation in android/build.gradle.
-* For iOS and MacOS: Xcode, via CocoaPods.
-  * See the documentation in ios/dpython.podspec.
-  * See the documentation in macos/dpython.podspec.
-* For Linux and Windows: CMake.
-  * See the documentation in linux/CMakeLists.txt.
-  * See the documentation in windows/CMakeLists.txt.
+If you need to work with a specific Python module repeatedly, you can import it once and then call its functions. This is more efficient than using `eval` for every call.
 
-## Binding to native code
+```dart
+// 1. Import the 'math' module
+var mathModule = PyModuleWrapper.importModule(moduleName: "math");
 
-To use the native code, bindings in Dart are needed.
-To avoid writing these by hand, they are generated from the header file
-(`src/dpython.h`) by `package:ffigen`.
-Regenerate the bindings by running `dart run ffigen --config ffigen.yaml`.
+// 2. Call a function without arguments
+// Example with 'sys' module
+var sysModule = PyModuleWrapper.importModule(moduleName: "sys");
+var encoding = sysModule.callFunction(funcName: "getdefaultencoding");
 
-## Invoking native code
+// 3. Call a function with arguments
+var result = mathModule.callFunctionArgs(
+  funcName: "pow",
+  args: [
+    PyArgument.float(2.0), // base
+    PyArgument.float(3.0), // exponent
+  ],
+);
+debugPrint("2^3 is: $result"); // Prints: "8.0"
+```
 
-Very short-running native functions can be directly invoked from any isolate.
-For example, see `sum` in `lib/dpython.dart`.
+### Level 3: `PyObjectWrapper` - The Advanced API for Full Control
 
-Longer-running functions should be invoked on a helper isolate to avoid
-dropping frames in Flutter applications.
-For example, see `sumAsync` in `lib/dpython.dart`.
+For maximum flexibility, `dpython` allows you to get a handle to *any* Python object and interact with it directly from Dart. This handle is an opaque object of type `PyObjectWrapper`.
 
-## Flutter help
+You can get a `PyObjectWrapper` by using `PythonUtility.evalAsObject`.
 
-For help getting started with Flutter, view our
-[online documentation](https://docs.flutter.dev), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+#### Getting an object and converting its type
 
+```dart
+// Get a Python list as an object handle
+var pyList = await PythonUtility.evalAsObject(code: "[10, 20, 30]");
+
+// Get the length of the list
+int length = await pyList.len(); // 3
+
+// Get an item from the list (which is another PyObjectWrapper)
+var item = await pyList.getItem(key: PyArgument.int(0));
+
+// Convert the item to a Dart type
+int value = await item.asInt();
+debugPrint("First item is: $value"); // Prints: 10
+```
+
+#### Calling methods and accessing attributes
+
+You can use the object handle to call methods and access attributes on the underlying Python object.
+
+```dart
+// Continuing from the 'Greeter' class defined earlier...
+
+// 1. Create an instance of the Greeter class
+var person = await PythonUtility.evalAsObject(
+  code: "Greeter('World')",
+);
+
+// 2. Call a method on the instance
+var greeting = await person.callMethod(methodName: "say_hello", args: []);
+debugPrint(await greeting.asStr()); // Prints: "Hello, World"
+
+// 3. Get an attribute
+var name = await person.getattr(attrName: "name");
+debugPrint(await name.asStr()); // Prints: "World"
+```
